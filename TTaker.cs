@@ -1,48 +1,45 @@
 ﻿using UnityEngine;
 using UnityEditor;
+using System.Linq;
 using System.IO;
 
-/**
-TextureTaker (TTaker)
-
-Author: Colin Windmuller
-
-Version: 1.0
-Last Updated: 11/22/2016
-
-About: TTaker is an Editor script that automates importing Textures and creating a Material.
-
-Assumptions:
-    0) TTaker.cs is located in Assets/Editor folder.
-    1) Textures have suffixes for what they do: {Albedo: 'a', Metal/Spec: 'm', Normal: 'n', Height: 'h', Occlusion: 'ao', Emissive: 'e'}
-    2) Texture Suffixes are prefixed with a special character, '_' by default, can be changed in the options panel
-    3) Textures for 1 Material exist in 1 Folder. TTaker will use this folder name for the Material name.
-    4) TTaker only uses the Standard Shader.
-
-Future Development: Better importing, that can handle multiple Materials at once, changing assumption #3.
-    Better Options Menu, to support other Shaders as well as custom texture suffixes, changing assumptions #1 and #4.
-**/
-
+/// <summary>
+/// Imports Textures to the Assets/Materials folder in bulk and creates Standard shader Materials.
+/// Creates or updates Material assets with the imported textures.
+/// Relies HEAVILY on file naming conventions of the images.
+/// Expects file names as "materialName_x.png", where the 'x' suffix identifies the material slot as follows:
+/// {Albedo:('a','c','d'), Metal/Spec: ('m','s'), Normal: 'n', Height: ('b','h'), Occlusion: 'ao', Emissive: 'e'}
+/// </summary>
+/// <author email="cwin627@gmail.com">Colin Windmuller</author>
 public class TTaker : EditorWindow
 {
-    private static string ShaderName = "Standard";
-    private static string DirectoryPath = "Assets";
-    private static string DirectoryName = "Materials";
-    private static string MaterialType = ".mat";
+    private const string SHADER_TYPE = "Standard";
+    private const string ASSETS_DIRECTORY = "Assets";
+    private const string MATERIAL_EXT = ".mat";
+    private static string ExportFolder = "Materials";
 
-    public static string PrefixToken = "_";
+    public static string SuffixToken = "_";
+    public static bool ShouldOverwrite = false;
     private const char BSLASH = '\\';
     private const char FSLASH = '/';
     private const char DOT = '.';
     private static string[] fileTypes = { "PSD", "TIFF", "JPG", "TGA", "PNG", "GIF", "BMP" };
-    //public static string 
-
-    //  returns a/b
+    
+    /// <summary>
+    /// Returns a + '/' + b
+    /// </summary>
+    /// <param name="a"></param>
+    /// <param name="b"></param>
+    /// <returns></returns>
     private static string AddPath(string a, string b)
     {
         return a + FSLASH + b;
     }
-
+    /// <summary>
+    /// Finds the last occuring slash, either '\' or '/'
+    /// </summary>
+    /// <param name="a"></param>
+    /// <returns></returns>
     private static int LastSlash(string a)
     {
         int i = a.LastIndexOf(FSLASH);
@@ -50,114 +47,158 @@ public class TTaker : EditorWindow
 
         return Mathf.Max( i, j );
     }
-
-    void OnGUI()
+    ///<summary>
+    ///Matches a suffix letter with a Standard Shader parameter. ('b' -> "_BumpMap", eg)
+    ///</summary>
+    private static string SuffixToParameter(string suffix, string fileName)
     {
-
-        GUILayout.Label( "Name Settings", EditorStyles.boldLabel );
-        PrefixToken = EditorGUILayout.TextField( "Prefix Token", PrefixToken );
-
+        suffix = suffix.ToLower();
+        string propertyName = "";
+        switch ( suffix )
+        {
+            case "d":
+            case "c":
+            case "a":
+                propertyName = "_MainTex";
+                break;
+            case "s":
+            case "m":
+                propertyName = "_MetallicGlossMap";
+                break;
+            case "n":
+                propertyName = "_BumpMap";
+                break;
+            case "h":
+            case "b":
+                propertyName = "_ParallaxMap";
+                break;
+            case "ao":
+                propertyName = "_OcclusionMap";
+                break;
+            case "e":
+                propertyName = "_EmissionMap";
+                break;
+            default:
+                Debug.Log( "(TTaker) Unkown suffix: '" + suffix + "' in \"" + fileName + "\"" );
+                break;
+        }
+        return propertyName;
     }
-
-    //  Creates Material Asset using textures in a given folder
-    [MenuItem( "Tools/TTaker/Import" )]
-    private static void TakeTextures ()
+    /// <summary>
+    /// Returns either a new empty Material, or the one that already exists.
+    /// </summary>
+    /// <param name="directory"></param>
+    /// <param name="name"></param>
+    /// <returns></returns>
+    public static Material MakeOrGetMaterial(string directory, string name, out bool isNewMaterial)
     {
-        //File Browser prompt and files collection
-        string path = EditorUtility.OpenFolderPanel( "Select Texture Folder", "", "" );
-        string[] files = Directory.GetFiles( path );
-
-        string rootPath = DirectoryPath;
-        string exportFolderName = DirectoryName;
-        string exportPath = AddPath( rootPath, exportFolderName );
-        
-        // Does the export folder exist? If not, make one
-        if ( !AssetDatabase.IsValidFolder( exportPath ) )
-            AssetDatabase.CreateFolder( rootPath, exportFolderName );
-
-        // Parse for the material name, check for CONFLICTS, use this for the .mat
-        string materialName = path.Substring( LastSlash( path ) + 1 );
-        Material material = new Material(Shader.Find( ShaderName ) );
-
-        string[] lookFor = new string[] { exportPath };
-        string[] assets = AssetDatabase.FindAssets(materialName + " " + "t:material",lookFor);
+        isNewMaterial = false;
+        string[] searchFolders = new string[] { directory };
+        string[] assets = AssetDatabase.FindAssets(name + " " + "t:material",searchFolders);
         if ( assets.Length > 0 )
         {
-            Debug.Log( materialName + ".mat Already Exists. Import cancelled." );
-            return;
+            return AssetDatabase.LoadAssetAtPath( AddPath( directory, name ) + MATERIAL_EXT, typeof( Material ) ) as Material;
         }
+        isNewMaterial = true;
+        return new Material( Shader.Find( SHADER_TYPE ) );
+    }
+    /// <summary>
+    /// Optionally creates thew new Material Asset, does nothing if the asset already exists
+    /// </summary>
+    /// <param name="material"></param>
+    /// <param name="assetPath"></param>
+    /// <param name="isNewMaterial"></param>
+    public static bool CreateNewMaterial(Material material, string assetPath, bool isNewMaterial)
+    {
+        if ( !isNewMaterial )
+            return false;
+        AssetDatabase.CreateAsset( material, assetPath + MATERIAL_EXT );
+        return true;
+    }
+    public struct IOFilePaths
+    {
+        public string localDirectory;
+        public string readDirectory;
+        public string writeDirectory;
+    }
+    public struct ImgFile
+    {
+        public int lastDot;
+        public int lastSlash;
+        public int lastToken;
+        public string name;
+        public string fileName;
+        public string suffix;
+    }
 
-        // For each file, see if it is an image and if it has the appropriate format (xx_ao.psd, eg)
+    ///<summary>
+    ///Main function that streamlines importing textures and creating related Materials in Assets/folderX.
+    ///</summary>
+    [MenuItem( "Tools/TextureTaker" )]
+    private static void TakeTextures ()
+    {
+        string[] files = Directory.GetFiles(
+                            EditorUtility.OpenFolderPanel( "Select Texture Folder", "", "" )
+                         ).OrderBy( x => x).ToArray();
+
+        if ( files.Length == 0 )
+            return;
+
+        IOFilePaths paths;
+        paths.localDirectory = ASSETS_DIRECTORY;
+        paths.writeDirectory = AddPath( paths.localDirectory, ExportFolder );
+
+        if ( !AssetDatabase.IsValidFolder( paths.writeDirectory ) )
+            AssetDatabase.CreateFolder( paths.localDirectory, ExportFolder );
+
+        string currentMaterialName = "";
+        Texture texture = null;
+        Material material = null;
+        bool isNewMaterial = false;
+        ImgFile imgFile = new ImgFile();
+
+        int totalTexturesImported = 0;
+        int totalMaterialsCreated = 0;
+
         foreach ( string file in files )
         {
-            // File extension is after the '.' (.jpg, eg)
-            int lastDot = file.LastIndexOf( DOT );
-            
-            // Is this an accepted Image file type? ignores case
-            if ( ArrayUtility.Contains<string>( fileTypes, file.Substring( lastDot + 1 ).ToUpper() ) )
+            imgFile.lastDot = file.LastIndexOf( DOT );
+
+            if ( !ArrayUtility.Contains<string>( fileTypes, file.Substring( imgFile.lastDot + 1 ).ToUpper() ) )
+                return;
+
+            imgFile.lastSlash = LastSlash( file );
+            imgFile.fileName = file.Substring( imgFile.lastSlash + 1, file.Length - imgFile.lastSlash - 1 );
+            imgFile.lastToken = file.LastIndexOf( SuffixToken );
+            if ( imgFile.lastToken < 0 )
+                return;
+
+            imgFile.name = file.Substring( imgFile.lastSlash + 1, imgFile.lastToken - imgFile.lastSlash - 1 );
+            imgFile.suffix = file.Substring( imgFile.lastToken + 1, imgFile.lastDot - imgFile.lastToken - 1 );
+
+            if ( imgFile.name != currentMaterialName )
             {
-                // Find the special Prefix Token ( xx_h.jpg -> '_', eg)
-                int prefixIndex = file.LastIndexOf( PrefixToken[0] );
-
-                // Does this image file contain the prefix token? Then let's try to import it
-                if ( prefixIndex > 0 )
-                {
-                    string textureType = file.Substring( ++prefixIndex , lastDot - prefixIndex );
-                    string newFile = file.Substring( LastSlash( file ) + 1 );
-
-                    string newPath = AddPath( exportPath, newFile );
-
-                    try
-                    {
-                        File.Copy( file, newPath ); //maybe change to AssetDatabase function
-                        AssetDatabase.Refresh(); //IMPORTANT
-                        Texture2D texture = (Texture2D)AssetDatabase.LoadAssetAtPath( newPath, typeof(Texture2D) );
-
-                        // Attaches the Texture to the Material, using file suffix
-                        switch ( textureType )
-                        {
-                            case "d":
-                            case "c":
-                            case "a":
-                                material.SetTexture( "_MainTex", texture );
-                                break;
-                            case "s":
-                            case "m":
-                                material.SetTexture( "_MetallicGlossMap", texture );
-                                break;
-                            case "b":
-                            case "n":
-                                material.SetTexture( "_BumpMap", texture );
-                                break;
-                            case "h":
-                                material.SetTexture( "_ParallaxMap", texture );
-                                break;
-                            case "ao":
-                                material.SetTexture( "_OcclusionMap", texture );
-                                break;
-                            case "e":
-                                material.SetTexture( "_EmissionMap", texture );
-                                break;
-                            default:
-                                Debug.Log( "Unkown suffix: " + textureType );
-                                break;
-                        }
-                    }
-                    catch
-                    {
-                        Debug.Log( "Could not import: " + file );
-                    }
-                }
+                if ( material != null )
+                    if ( CreateNewMaterial( material, AddPath( paths.writeDirectory, currentMaterialName ), isNewMaterial ) )
+                        totalMaterialsCreated++;
+                material = MakeOrGetMaterial( paths.writeDirectory, imgFile.name, out isNewMaterial );
+                currentMaterialName = imgFile.name;
             }
+
+            string fileNewPath = AddPath( paths.writeDirectory, imgFile.fileName );
+            try
+            {
+                File.Copy( file, fileNewPath, true );
+                totalTexturesImported++;
+            }
+            catch { }
+            AssetDatabase.Refresh(); //must refresh before this texture can be assigned
+            texture = (Texture2D)AssetDatabase.LoadAssetAtPath( fileNewPath, typeof( Texture2D ) );
+
+            material.SetTexture( SuffixToParameter( imgFile.suffix.ToString(), imgFile.fileName ), texture );
         }
-        //Finally, save the Material as an Asset
-        AssetDatabase.CreateAsset( material, exportPath + FSLASH + materialName + MaterialType );
+        if ( CreateNewMaterial( material, AddPath( paths.writeDirectory, currentMaterialName ), isNewMaterial ) )
+            totalMaterialsCreated++;
+        Debug.Log( "(TTaker) " + totalTexturesImported + " Textures taken,  " + totalMaterialsCreated + " Materials created." );
     }
-
-    [MenuItem( "Tools/TTaker/Options" )]
-    private static void SetOptions ()
-    {
-        EditorWindow.GetWindow( typeof( TTaker ) );
-    }
-
 }
